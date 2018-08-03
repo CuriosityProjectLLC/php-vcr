@@ -4,6 +4,7 @@ namespace VCR\Util;
 
 use VCR\Request;
 use VCR\Response;
+use ReflectionMethod;
 
 /**
 * cURL helper class.
@@ -47,6 +48,9 @@ class CurlHelper
      *
      * The response header might be passed to a custom function.
      *
+     * @todo Case when $curlOptions[CURLOPT_HEADERFUNCTION] is a string
+     *       in the format of class::method.
+     *
      * @param  Response $response    Response which contains the response body.
      * @param  array    $curlOptions cURL options which are not stored within the Response.
      * @param  resource $ch          cURL handle to add headers if needed.
@@ -61,7 +65,18 @@ class CurlHelper
             $headerList = array_merge($headerList, HttpUtil::formatHeadersForCurl($response->getHeaders()));
             $headerList[] = '';
             foreach ($headerList as $header) {
-                call_user_func($curlOptions[CURLOPT_HEADERFUNCTION], $ch, $header);
+                // ID how the CURLOPT_HEADERFUNCTION option has been set
+                $arg = $curlOptions[CURLOPT_HEADERFUNCTION]; // [class, method]
+                if (is_array($arg) && count($arg) === 2) {
+                    $method = new ReflectionMethod(get_class($arg[0]), $arg[1]);
+                    if (!$method->isPublic()) {
+                        $method->setAccessible(true);
+                    }
+                    $method->invoke($arg[0], $ch, $header);
+                // } elseif (is_string($arg)) {
+                } else {
+                    call_user_func($arg, $ch, $header);
+                }
             }
         }
 
@@ -110,6 +125,10 @@ class CurlHelper
                 break;
             case CURLINFO_HEADER_SIZE:
                 $info =  mb_strlen(HttpUtil::formatAsStatusWithHeadersString($response), 'ISO-8859-1');
+                break;
+            case CURLINFO_HEADER_OUT:
+                $headers = $response->getHeaders(); // Array
+                $info = json_encode($headers); // Needs string
                 break;
             default:
                 $info = $response->getCurlInfo($option);
@@ -187,7 +206,7 @@ class CurlHelper
                 break;
         }
     }
-    
+
     /**
      * Makes sure we've properly handled the POST body, such as ensuring that
      * CURLOPT_INFILESIZE is set if CURLOPT_READFUNCTION is set.
@@ -201,13 +220,13 @@ class CurlHelper
         if (is_null($readFunction)) {
             return;
         }
-        
+
         // Guzzle 4 sometimes sets the post body in CURLOPT_POSTFIELDS even if
         // they have already set CURLOPT_READFUNCTION.
         if ($request->getBody()) {
             return;
         }
-        
+
         $bodySize = $request->getCurlOption(CURLOPT_INFILESIZE);
         Assertion::notEmpty($bodySize, 'To set a CURLOPT_READFUNCTION, CURLOPT_INFILESIZE must be set.');
         $body = call_user_func_array($readFunction, array($curlHandle, fopen('php://memory', 'r'), $bodySize));
